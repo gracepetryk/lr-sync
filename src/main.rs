@@ -437,7 +437,11 @@ fn pull(cfg: &Config, folders: &[Folder]) -> Result<()> {
         } else if dir_exists {
             (cfg.remote_dir(folder), true)
         } else {
-            bail!("{} not found on {}", cfg.remote_dir(folder), cfg.remote_host);
+            bail!(
+                "{} not found on {}",
+                cfg.remote_dir(folder),
+                cfg.remote_host
+            );
         };
         photos += remote_file_list(cfg, &src)?
             .iter()
@@ -464,9 +468,13 @@ fn pull(cfg: &Config, folders: &[Folder]) -> Result<()> {
     )?;
 
     for ((folder, _, need_rename), cmd) in plan.iter().zip(&mut cmds) {
-        run_rsync(if cfg.yes { Echo::Command } else { Echo::Silent }, cmd)?;
+        run_rsync(Echo::from(cfg.yes), cmd)?;
         if *need_rename {
-            remote_mv(cfg, &cfg.remote_dir(folder), &cfg.remote_checked_out(folder))?;
+            remote_mv(
+                cfg,
+                &cfg.remote_dir(folder),
+                &cfg.remote_checked_out(folder),
+            )?;
         }
         println!(
             "{}",
@@ -542,7 +550,7 @@ fn push(cfg: &Config, folders: &[Folder]) -> Result<()> {
     )?;
 
     for ((folder, dest, was_checked_out), cmd) in plan.iter().zip(&mut cmds) {
-        run_rsync(if cfg.yes { Echo::Command } else { Echo::Silent }, cmd)?;
+        run_rsync(Echo::from(cfg.yes), cmd)?;
         let remote_dir = cfg.remote_dir(folder);
         if *was_checked_out {
             remote_mv(cfg, dest, &remote_dir)?;
@@ -854,6 +862,12 @@ fn confirm_rsyncs(cfg: &Config, action: &str, cmds: &[Command]) -> Result<()> {
 enum Echo {
     Command,
     Silent,
+}
+
+impl From<bool> for Echo {
+    fn from(value: bool) -> Self {
+        if value { Echo::Command } else { Echo::Silent }
+    }
 }
 
 fn run_rsync(echo: Echo, cmd: &mut Command) -> Result<()> {
