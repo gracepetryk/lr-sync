@@ -8,13 +8,21 @@ laptop disk space. The roots are user configuration, never hardcoded.
 
 ```sh
 cargo build          # binary at target/debug/lr-sync
-cargo test           # unit tests in src/main.rs
+cargo test           # unit tests live in each module's tests submodule
 cargo clippy         # keep clean
 ```
 
 ## Layout
 
-- `src/main.rs` — the whole CLI (clap derive; shells out to `rsync` and `ssh`)
+- `src/main.rs` — clap derive CLI (`Cli`/`Cmd`) and dispatch
+- `src/commands.rs` — `pull`, `push`, `list_folders`, culled-file handling,
+  local-fs helpers
+- `src/config.rs` — `Config` (flags > config file), config-file parsing,
+  the `configure` subcommand
+- `src/folder.rs` — `Folder` name parsing (`YYYY-MM-DD…` → name + year)
+- `src/remote.rs` — ssh helpers (`remote_run`, `remote_script`, `sh_quote`, …)
+- `src/rsync.rs` — building, confirming, and running rsync commands
+- `src/ui.rs` — interactive prompts (`confirm`, `confirm_with_hint`, `prompt`)
 - `_lr-sync` — zsh completion; calls the hidden `lr-sync list-folders <pull|push>`
   subcommand for dynamic folder candidates (local tree for `push`, NAS via ssh
   for `pull`)
