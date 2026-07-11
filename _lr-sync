@@ -1,64 +1,57 @@
 #compdef lr-sync
 
-_lr-sync() {
-  local curcontext=$curcontext state line ret=1
-  typeset -A opt_args
+# Drop straight into the highlighted, arrow-navigable menu on the first tab
+# (rather than needing one tab to list and a second to enter the menu); the
+# candidates usually share a long prefix, so seeing them selectable at once is
+# what you want.
+zstyle ':completion:*:lr-sync:*' menu select
 
-  _arguments -C \
-    '(-l --local)'{-l,--local}'[local tree root]:directory:_directories' \
-    '(-r --remote)'{-r,--remote}'[remote tree root, HOST\:DIR]:remote:' \
-    '--culled[culled tree root on the remote]:directory:' \
-    '--suffix[checked-out suffix on the remote]:suffix:' \
-    '(-y --yes)'{-y,--yes}'[answer yes to every confirmation prompt]' \
-    '(-v --verbose)'{-v,--verbose}'[print each rsync/ssh command before running it]' \
-    '(-n --dry-run)'{-n,--dry-run}'[show what would happen without changing anything]' \
-    '(-h --help)'{-h,--help}'[show help]' \
-    '1:command:->command' \
-    '*:folder:->folder' && ret=0
+# Complete folder arguments for pull/push. Candidates come from the installed
+# binary so completion tracks the real config: `local-root` for push (native
+# path completion under the local tree), `list-folders <parent>` for pull (the
+# remote dirs one layer below what's typed, descending a component per tab). Any
+# -l/-r overrides on the line are passed through so candidates come from the
+# right trees.
+_lr-sync_folders() {
+  local -a flags
+  local val
+  val=${opt_args[-l]:-$opt_args[--local]}
+  [[ -n $val ]] && flags+=(--local ${(Q)val})
+  val=${opt_args[-r]:-$opt_args[--remote]}
+  [[ -n $val ]] && flags+=(--remote ${(Q)val})
 
-  case $state in
-    command)
-      # -V keeps this order (everyday commands first, configure last)
-      local -a commands=(pull push configure)
-      local -a command_descs=(
-        'pull       -- copy folder from remote and mark it checked out'
-        'push       -- return folder to remote and remove local copy'
-        'configure  -- write ~/.config/lr-sync/config interactively'
-      )
-      _wanted -V commands expl 'command' compadd -l -d command_descs -a commands && ret=0
-      ;;
-    folder)
-      # pass any -l/-r overrides through so candidates come from the right trees
-      local -a flags
-      local val
-      val=${opt_args[-l]:-${opt_args[--local]:-}}
-      [[ -n $val ]] && flags+=(--local ${(Q)val})
-      val=${opt_args[-r]:-${opt_args[--remote]:-}}
-      [[ -n $val ]] && flags+=(--remote ${(Q)val})
-
-      local -a folders
-      folders=(${(f)"$(lr-sync $flags list-folders $line[1] 2>/dev/null)"})
-      # don't re-offer folders already on the command line
-      folders=(${folders:|words})
-      # -V keeps lr-sync's order (newest first) instead of zsh re-sorting
-      _wanted -V folders expl 'folder' compadd -a folders && ret=0
-      ;;
-  esac
-
-  # candidates often share a prefix ("pu", "2026-07-0"); while the choice is
-  # still ambiguous, list them immediately instead of inserting the prefix
-  # (which needs a second tab and beeps); once the list is up, further tabs
-  # cycle through it
-  if (( compstate[nmatches] > 1 )); then
-    if [[ -n $compstate[old_list] ]]; then
-      compstate[insert]='menu'
-    else
-      compstate[insert]=''
-      compstate[list]='list force'
-    fi
+  if [[ $words[2] == push ]]; then
+    local root
+    root=$(lr-sync $flags local-root 2>/dev/null) || return 1
+    [[ -n $root ]] && _path_files -W $root -/
+  else
+    # remote candidates one layer at a time: consume the parent components
+    # already typed (IPREFIX), list the dirs directly below them, and offer the
+    # bare leaf names with a `/` suffix so each tab descends one more level
+    compset -P '*/'
+    local -a kids expl
+    kids=(${(f)"$(lr-sync $flags list-folders ${IPREFIX%/} 2>/dev/null)"})
+    kids=(${kids##*/})
+    (( $#kids )) && _wanted folders expl folder compadd -S/ -q -a kids
   fi
-
-  return ret
 }
 
-_lr-sync "$@"
+_arguments -s -C \
+  '(-l --local)'{-l,--local}'[local tree root]:directory:_directories' \
+  '(-r --remote)'{-r,--remote}'[remote tree root, HOST\:DIR]:remote:' \
+  '--culled[culled tree root on the remote]:directory:' \
+  '--suffix[checked-out suffix on the remote]:suffix:' \
+  '(-y --yes)'{-y,--yes}'[answer yes to every confirmation prompt]' \
+  '(-v --verbose)'{-v,--verbose}'[print each rsync/ssh command before running it]' \
+  '(-n --dry-run)'{-n,--dry-run}'[show what would happen without changing anything]' \
+  '(-h --help)'{-h,--help}'[show help]' \
+  '1:command:(( \
+      pull\:"copy folder from remote and mark it checked out" \
+      push\:"return folder to remote and remove local copy" \
+      configure\:"write ~/.config/lr-sync/config interactively" ))' \
+  '*:folder:_lr-sync_folders'
+
+# folders share a long prefix ("2026-07-0"), so a plain tab would insert that
+# prefix and make you tab again to open the menu; force the menu (selection, via
+# the `menu select` style above) open on the very first tab instead
+(( compstate[nmatches] > 1 )) && compstate[insert]='menu'

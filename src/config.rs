@@ -76,11 +76,11 @@ impl Config {
     }
 
     pub fn local_dir(&self, folder: &Folder) -> PathBuf {
-        self.local_root.join(&folder.year).join(&folder.name)
+        self.local_root.join(&folder.rel)
     }
 
     pub fn remote_dir(&self, folder: &Folder) -> String {
-        format!("{}/{}/{}", self.remote_root, folder.year, folder.name)
+        format!("{}/{}", self.remote_root, folder.rel)
     }
 
     pub fn remote_checked_out(&self, folder: &Folder) -> String {

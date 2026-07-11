@@ -23,14 +23,21 @@ cargo clippy         # keep clean
 - `src/remote.rs` — ssh helpers (`remote_run`, `remote_script`, `sh_quote`, …)
 - `src/rsync.rs` — building, confirming, and running rsync commands
 - `src/ui.rs` — interactive prompts (`confirm`, `confirm_with_hint`, `prompt`)
-- `_lr-sync` — zsh completion; calls the hidden `lr-sync list-folders <pull|push>`
-  subcommand for dynamic folder candidates (local tree for `push`, NAS via ssh
-  for `pull`)
+- `_lr-sync` — zsh completion; `push` uses native path completion (`_files`
+  rooted at the hidden `lr-sync local-root`), `pull` descends one remote layer
+  per tab via the hidden `lr-sync list-folders <parent>` (the dirs directly
+  below `<parent>`, hidden dirs pruned, checked-out suffix stripped from every
+  component so a checked-out parent stays navigable under its clean name) —
+  both complete one layer per tab
 
 ## Behavior invariants
 
-Folders are named `YYYY-MM-DD…` and live under a year directory on both sides
-(e.g. `<root>/2026/2026-07-01`); the year is derived from the folder name.
+Folders are addressed by their path relative to the tree roots, taken
+literally and mirrored on both sides — any layering works
+(`2026/2026-07-01`, `2026/07/01`, `2026/2026-07/2026-07-01`). Names are not
+validated (only path safety: relative, no `..`); a parent layer (`2026/07`,
+or a bare `2026`) names everything under it as one unit — it checks out and
+returns as a whole.
 
 - `pull` copies NAS → local, then renames the NAS folder to
   `<folder>.checked-out`. **`pull` must NEVER delete files from the NAS** — no
@@ -55,6 +62,13 @@ Folders are named `YYYY-MM-DD…` and live under a year directory on both sides
   its transfer).
 - If both `<folder>` and `<folder>.checked-out` exist on the NAS, refuse to do
   anything and tell the user to resolve it manually.
+- `push` refuses when a parent layer of the target is checked out on the NAS
+  (one ssh probe covering all layers): pushing below it would create a plain
+  tree next to the renamed one, which Lightroom then sees twice.
+- Pushing a parent un-checks-out any checked-out subdirs under the
+  destination first (renamed back deepest-first in one remote script,
+  refusing if a plain sibling exists), so the rsync merges into them; this
+  runs before the cull comparison so their files aren't mistaken for culled.
 - Pulling an already-checked-out folder resumes from the `.checked-out` copy.
 - Local/remote/culled roots and the checked-out suffix come from
   `~/.config/lr-sync/config` (`$XDG_CONFIG_HOME` respected; `key = value`

@@ -9,7 +9,10 @@ use std::process::Command;
 
 use crate::config::Config;
 use crate::folder::Folder;
-use crate::remote::{remote_file_list, remote_mv, remote_run, remote_script, remote_state, sh_quote};
+use crate::remote::{
+    checked_out_ancestor, remote_checked_out_subdirs, remote_file_list, remote_mv, remote_run,
+    remote_script, remote_state, sh_quote,
+};
 use crate::rsync::{Echo, confirm_rsyncs, rsync_command, run_rsync};
 use crate::ui::confirm;
 
@@ -25,7 +28,7 @@ pub fn pull(cfg: &Config, folders: &[Folder]) -> Result<()> {
                 "{}",
                 format!(
                     "note: {} is already checked out on {}; resuming pull",
-                    folder.name, cfg.remote_host
+                    folder.rel, cfg.remote_host
                 )
                 .dimmed()
             );
@@ -48,7 +51,8 @@ pub fn pull(cfg: &Config, folders: &[Folder]) -> Result<()> {
 
     let mut cmds = Vec::new();
     for (folder, src, _) in &plan {
-        fs::create_dir_all(cfg.local_root.join(&folder.year))?;
+        let local_dir = cfg.local_dir(folder);
+        fs::create_dir_all(local_dir.parent().expect("folder path has a parent"))?;
         // remote -> local only, no delete flags: the NAS copy is never touched
         cmds.push(rsync_command(
             cfg,
@@ -76,9 +80,9 @@ pub fn pull(cfg: &Config, folders: &[Folder]) -> Result<()> {
             "{}",
             format!(
                 "pulled {} -> {} (remote copy kept as {}{})",
-                folder.name,
+                folder.rel,
                 cfg.local_dir(folder).display(),
-                folder.name,
+                folder.rel,
                 cfg.checked_out_suffix
             )
             .green()
@@ -95,6 +99,15 @@ pub fn push(cfg: &Config, folders: &[Folder]) -> Result<()> {
     for folder in folders {
         let local_dir = cfg.local_dir(folder);
         ensure!(local_dir.is_dir(), "{} not found", local_dir.display());
+        // pushing below a checked-out parent would create a plain tree next
+        // to the renamed one, which Lightroom then sees twice
+        if let Some(parent) = checked_out_ancestor(cfg, folder)? {
+            bail!(
+                "{parent} is checked out on {} (as {parent}{}); push {parent} as a whole instead",
+                cfg.remote_host,
+                cfg.checked_out_suffix
+            );
+        }
         let (dir_exists, co_exists) = remote_state(cfg, folder)?;
 
         let dest = if co_exists {
@@ -106,18 +119,26 @@ pub fn push(cfg: &Config, folders: &[Folder]) -> Result<()> {
                 "{}",
                 format!(
                     "note: {} does not exist on {}; creating it",
-                    folder.name, cfg.remote_host
+                    folder.rel, cfg.remote_host
                 )
                 .dimmed()
             );
-            let year_dir = format!("{}/{}", cfg.remote_root, folder.year);
-            remote_run(cfg, &format!("mkdir -p {}", sh_quote(&year_dir)))?;
-            cfg.remote_dir(folder)
+            let remote_dir = cfg.remote_dir(folder);
+            let parent = remote_dir
+                .rsplit_once('/')
+                .expect("remote dir has a parent")
+                .0;
+            remote_run(cfg, &format!("mkdir -p {}", sh_quote(parent)))?;
+            remote_dir
         };
 
-        // files deleted locally while checked out move to the culled tree
-        // before the sync, so they neither reappear in Lightroom nor get lost
         if dir_exists || co_exists {
+            // subdirs checked out individually get their plain names back
+            // first, so the rsync merges into them (and the cull comparison
+            // below sees them under the same paths as the local copies)
+            uncheckout_subdirs(cfg, &dest)?;
+            // files deleted locally while checked out move to the culled tree
+            // before the sync, so they neither reappear in Lightroom nor get lost
             cull_removed(cfg, folder, &dest, &local_dir)?;
         }
 
@@ -172,7 +193,7 @@ pub fn push(cfg: &Config, folders: &[Folder]) -> Result<()> {
             "{}",
             format!(
                 "pushed {} -> {}:{}",
-                folder.name, cfg.remote_host, remote_dir
+                folder.rel, cfg.remote_host, remote_dir
             )
             .green()
         );
@@ -201,43 +222,100 @@ fn is_photo(path: &str) -> bool {
     }
 }
 
-pub fn list_folders(cfg: &Config, cmd: &str) -> Result<()> {
+/// List remote folder candidates for pull completion: every directory up to
+/// three layers under the remote root, as root-relative paths (one ssh round
+/// trip; `_multi_parts` completes them one layer at a time). The checked-out
+/// suffix is stripped so resumable checkouts complete like plain folders.
+/// Push completion doesn't come through here: it uses zsh's native `_files`
+/// rooted at the local tree.
+/// List the directories exactly one layer below `prefix` (a clean, root-relative
+/// path; empty means the top level), as clean root-relative paths. Completion
+/// calls this once per tab to descend a single component at a time. Names are
+/// compared after stripping the checked-out suffix from every component, so a
+/// checked-out parent layer (`2026.checked-out`) still lists under its clean
+/// name (`2026`) and stays navigable.
+pub fn list_folders(cfg: &Config, prefix: &str) -> Result<()> {
+    let prefix = prefix.trim_matches('/');
+    let comps = if prefix.is_empty() {
+        0
+    } else {
+        prefix.split('/').count()
+    };
+    let depth = comps + 1;
+    let out = Command::new("ssh")
+        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=3"])
+        .arg(&cfg.remote_host)
+        .arg(format!(
+            // hidden dirs (.claude, .lrdata, ...) are pruned, not offered
+            "find {} -mindepth {depth} -maxdepth {depth} -name '.*' -prune -o -type d -print",
+            sh_quote(&cfg.remote_root)
+        ))
+        .output()
+        .context("failed to run ssh")?;
+    let root_prefix = format!("{}/", cfg.remote_root);
+    let want = if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}/")
+    };
     let mut folders = BTreeSet::new();
-    match cmd {
-        // anything sitting in the local tree can be pushed
-        "push" => {
-            for year in read_dirs(&cfg.local_root)? {
-                for folder in read_dirs(&year)? {
-                    if let Some(name) = folder.file_name().and_then(|n| n.to_str()) {
-                        folders.insert(name.to_string());
-                    }
-                }
-            }
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some(rel) = line.strip_prefix(&root_prefix) else {
+            continue;
+        };
+        let clean: Vec<&str> = rel
+            .split('/')
+            .map(|c| c.strip_suffix(&cfg.checked_out_suffix).unwrap_or(c))
+            .collect();
+        let clean = clean.join("/");
+        if clean.starts_with(&want) {
+            folders.insert(clean);
         }
-        // remote folders; checked-out ones are offered too since pull resumes them
-        "pull" => {
-            let out = Command::new("ssh")
-                .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=3"])
-                .arg(&cfg.remote_host)
-                .arg(format!(
-                    "find {} -mindepth 2 -maxdepth 2 -type d",
-                    sh_quote(&cfg.remote_root)
-                ))
-                .output()
-                .context("failed to run ssh")?;
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                let name = line.rsplit('/').next().unwrap_or(line);
-                let name = name.strip_suffix(&cfg.checked_out_suffix).unwrap_or(name);
-                folders.insert(name.to_string());
-            }
-        }
-        _ => unreachable!(),
     }
-    // newest first, so completion cycling starts with recent folders
-    for f in folders.into_iter().rev() {
+    for f in &folders {
         println!("{f}");
     }
     Ok(())
+}
+
+/// Rename checked-out subdirs under `dest` back to their plain names (deepest
+/// first) before a parent push, refusing if a plain sibling already exists.
+fn uncheckout_subdirs(cfg: &Config, dest: &str) -> Result<()> {
+    let subdirs = remote_checked_out_subdirs(cfg, dest)?;
+    if subdirs.is_empty() {
+        return Ok(());
+    }
+
+    let mut script = String::from("set -eu\n");
+    for co in &subdirs {
+        let plain = co
+            .strip_suffix(&cfg.checked_out_suffix)
+            .expect("find matched the suffix");
+        if cfg.dry_run {
+            println!("+ would rename {co} -> {plain}");
+            continue;
+        }
+        script.push_str(&format!(
+            "test ! -e {plain_q} || {{ echo {msg} >&2; exit 1; }}\nmv {co_q} {plain_q}\n",
+            plain_q = sh_quote(plain),
+            co_q = sh_quote(co),
+            msg = sh_quote(&format!("both {co} and {plain} exist; resolve manually")),
+        ));
+    }
+    if cfg.dry_run {
+        return Ok(());
+    }
+
+    eprintln!(
+        "{}",
+        format!(
+            "note: {} checked-out folder(s) under {dest} on {}; renaming back before push",
+            subdirs.len(),
+            cfg.remote_host
+        )
+        .dimmed()
+    );
+    remote_script(cfg, &script, "checked-out folder rename")
 }
 
 /// Move files that exist in the NAS folder but not locally (culled in
@@ -254,7 +332,7 @@ fn cull_removed(cfg: &Config, folder: &Folder, dest: &str, local_dir: &Path) -> 
         return Ok(());
     }
 
-    let culled_dir = format!("{}/{}/{}", cfg.culled_root, folder.year, folder.name);
+    let culled_dir = format!("{}/{}", cfg.culled_root, folder.rel);
     if cfg.dry_run {
         for p in &culled {
             println!("+ would move {dest}/{p} -> {culled_dir}/{p} (after confirmation)");
@@ -267,7 +345,7 @@ fn cull_removed(cfg: &Config, folder: &Folder, dest: &str, local_dir: &Path) -> 
         format!(
             "{} file(s) in {} on {} have been removed from the local copy:",
             culled.len(),
-            folder.name,
+            folder.rel,
             cfg.remote_host
         )
         .bold()
@@ -320,7 +398,7 @@ fn cull_removed(cfg: &Config, folder: &Folder, dest: &str, local_dir: &Path) -> 
         "find {} -mindepth 1 -type d -empty -delete\n",
         sh_quote(dest)
     ));
-    remote_script(cfg, &script)
+    remote_script(cfg, &script, "culled-file move")
 }
 
 /// Relative paths of all regular files under `dir`.

@@ -81,12 +81,15 @@ enum Cmd {
     /// Create the config file by prompting for each value
     Configure,
 
-    /// List candidate folders (used by shell completion)
+    /// List remote folder candidates one layer below the given prefix (used by
+    /// shell completion, which descends one path component per tab)
     #[command(hide = true)]
-    ListFolders {
-        #[arg(value_parser = ["pull", "push"])]
-        cmd: String,
-    },
+    ListFolders { prefix: Option<String> },
+
+    /// Print the resolved local tree root (used by shell completion, so
+    /// push completion can be zsh's native path completion under that root)
+    #[command(hide = true)]
+    LocalRoot,
 }
 
 fn main() -> Result<()> {
@@ -102,7 +105,13 @@ fn main() -> Result<()> {
         Cmd::Push { folders } => {
             commands::push(&cfg, &parse_folders(folders, &cfg.checked_out_suffix)?)
         }
-        Cmd::ListFolders { cmd } => commands::list_folders(&cfg, cmd),
+        Cmd::ListFolders { prefix } => {
+            commands::list_folders(&cfg, prefix.as_deref().unwrap_or(""))
+        }
+        Cmd::LocalRoot => {
+            println!("{}", cfg.local_root.display());
+            Ok(())
+        }
         Cmd::Configure => unreachable!(),
     }
 }

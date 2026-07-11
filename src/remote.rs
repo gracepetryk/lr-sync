@@ -30,8 +30,9 @@ pub fn remote_file_list(cfg: &Config, dir: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Run a multi-line shell script on the NAS via stdin (avoids arg limits).
-pub fn remote_script(cfg: &Config, script: &str) -> Result<()> {
+/// Run a multi-line shell script on the NAS via stdin (avoids arg limits);
+/// `action` names the batch in the failure message.
+pub fn remote_script(cfg: &Config, script: &str, action: &str) -> Result<()> {
     use std::io::Write;
     cfg.trace_ssh(&format!("sh -s <<'EOF'\n{script}EOF"));
     let mut child = Command::new("ssh")
@@ -48,10 +49,69 @@ pub fn remote_script(cfg: &Config, script: &str) -> Result<()> {
     let status = child.wait()?;
     ensure!(
         status.success(),
-        "culled-file move on {} failed: {status}",
+        "{action} on {} failed: {status}",
         cfg.remote_host
     );
     Ok(())
+}
+
+/// The first ancestor layer of `folder` that is checked out on the NAS, if
+/// any (one ssh round trip for all layers). Pushing below a checked-out
+/// parent would create a plain tree next to the renamed one.
+pub fn checked_out_ancestor(cfg: &Config, folder: &Folder) -> Result<Option<String>> {
+    let probes: Vec<String> = folder
+        .ancestors()
+        .map(|a| {
+            let co = format!("{}/{a}{}", cfg.remote_root, cfg.checked_out_suffix);
+            format!("if test -d {}; then echo {}; fi", sh_quote(&co), sh_quote(a))
+        })
+        .collect();
+    if probes.is_empty() {
+        return Ok(None);
+    }
+    let command = probes.join("; ");
+    cfg.trace_ssh(&command);
+    let out = Command::new("ssh")
+        .arg(&cfg.remote_host)
+        .arg(command)
+        .output()
+        .context("failed to run ssh")?;
+    ensure!(
+        out.status.success(),
+        "checking for checked-out parents on {} failed: {}",
+        cfg.remote_host,
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .map(str::to_string))
+}
+
+/// Checked-out directories anywhere under `dir`, deepest first, so renaming
+/// them in order never invalidates the path of a later entry.
+pub fn remote_checked_out_subdirs(cfg: &Config, dir: &str) -> Result<Vec<String>> {
+    let command = format!(
+        "find {} -depth -mindepth 1 -type d -name {}",
+        sh_quote(dir),
+        sh_quote(&format!("*{}", cfg.checked_out_suffix))
+    );
+    cfg.trace_ssh(&command);
+    let out = Command::new("ssh")
+        .arg(&cfg.remote_host)
+        .arg(command)
+        .output()
+        .context("failed to run ssh")?;
+    ensure!(
+        out.status.success(),
+        "listing checked-out folders under {}:{dir} failed: {}",
+        cfg.remote_host,
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect())
 }
 
 /// Whether the plain and checked-out folders exist on the NAS (one ssh probe
