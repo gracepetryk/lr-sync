@@ -464,7 +464,7 @@ fn pull(cfg: &Config, folders: &[Folder]) -> Result<()> {
     )?;
 
     for ((folder, _, need_rename), cmd) in plan.iter().zip(&mut cmds) {
-        run_rsync(cfg, cmd)?;
+        run_rsync(cfg.yes, cmd)?;
         if *need_rename {
             remote_mv(cfg, &cfg.remote_dir(folder), &cfg.remote_checked_out(folder))?;
         }
@@ -542,7 +542,7 @@ fn push(cfg: &Config, folders: &[Folder]) -> Result<()> {
     )?;
 
     for ((folder, dest, was_checked_out), cmd) in plan.iter().zip(&mut cmds) {
-        run_rsync(cfg, cmd)?;
+        run_rsync(cfg.yes, cmd)?;
         let remote_dir = cfg.remote_dir(folder);
         if *was_checked_out {
             remote_mv(cfg, dest, &remote_dir)?;
@@ -847,10 +847,10 @@ fn confirm_rsyncs(cfg: &Config, action: &str, cmds: &[Command]) -> Result<()> {
     Ok(())
 }
 
-fn run_rsync(cfg: &Config, cmd: &mut Command) -> Result<()> {
-    // under --yes the batch confirmation didn't show the commands upfront;
-    // echo each one right before its transfer so output stays in order
-    if cfg.yes {
+/// `echo_command` prints the command right before the transfer — used under
+/// --yes, where the batch confirmation didn't show the commands upfront.
+fn run_rsync(echo_command: bool, cmd: &mut Command) -> Result<()> {
+    if echo_command {
         println!("{}", format!("+ {}", command_line(cmd)).dimmed());
     }
     let status = cmd.status().context("failed to run rsync")?;
