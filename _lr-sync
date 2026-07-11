@@ -1,0 +1,61 @@
+#compdef lr-sync
+
+_lr-sync() {
+  local curcontext=$curcontext state line ret=1
+  typeset -A opt_args
+
+  _arguments -C \
+    '(-l --local)'{-l,--local}'[local tree root]:directory:_directories' \
+    '(-r --remote)'{-r,--remote}'[remote tree root, HOST\:DIR]:remote:' \
+    '--culled[culled tree root on the remote]:directory:' \
+    '--suffix[checked-out suffix on the remote]:suffix:' \
+    '(-v --verbose)'{-v,--verbose}'[print each rsync/ssh command before running it]' \
+    '(-n --dry-run)'{-n,--dry-run}'[show what would happen without changing anything]' \
+    '(-h --help)'{-h,--help}'[show help]' \
+    '1:command:->command' \
+    '2:folder:->folder' && ret=0
+
+  case $state in
+    command)
+      # -V keeps this order (everyday commands first, configure last)
+      local -a commands=(pull push configure)
+      local -a command_descs=(
+        'pull       -- copy folder from remote and mark it checked out'
+        'push       -- return folder to remote and remove local copy'
+        'configure  -- write ~/.config/lr-sync/config interactively'
+      )
+      _wanted -V commands expl 'command' compadd -l -d command_descs -a commands && ret=0
+      ;;
+    folder)
+      # pass any -l/-r overrides through so candidates come from the right trees
+      local -a flags
+      local val
+      val=${opt_args[-l]:-${opt_args[--local]:-}}
+      [[ -n $val ]] && flags+=(--local ${(Q)val})
+      val=${opt_args[-r]:-${opt_args[--remote]:-}}
+      [[ -n $val ]] && flags+=(--remote ${(Q)val})
+
+      local -a folders
+      folders=(${(f)"$(lr-sync $flags list-folders $line[1] 2>/dev/null)"})
+      # -V keeps lr-sync's order (newest first) instead of zsh re-sorting
+      _wanted -V folders expl 'folder' compadd -a folders && ret=0
+      ;;
+  esac
+
+  # candidates often share a prefix ("pu", "2026-07-0"); while the choice is
+  # still ambiguous, list them immediately instead of inserting the prefix
+  # (which needs a second tab and beeps); once the list is up, further tabs
+  # cycle through it
+  if (( compstate[nmatches] > 1 )); then
+    if [[ -n $compstate[old_list] ]]; then
+      compstate[insert]='menu'
+    else
+      compstate[insert]=''
+      compstate[list]='list force'
+    fi
+  fi
+
+  return ret
+}
+
+_lr-sync "$@"
