@@ -20,8 +20,9 @@ lr-sync push 2026-07-01 2026-07-02   # laptop -> NAS (one or more folders)
   separate tree on the NAS — they don't reappear in Lightroom, but nothing
   is lost.
 
-Both commands show what they're about to do and ask before syncing.
-`-n`/`--dry-run` previews everything without changing anything.
+Both commands show what they're about to do and ask before syncing
+(`-y`/`--yes` skips the prompts). `-n`/`--dry-run` previews everything
+without changing anything.
 
 ## Install
 

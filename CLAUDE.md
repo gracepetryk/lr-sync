@@ -72,7 +72,9 @@ Folders are named `YYYY-MM-DD…` and live under a year directory on both sides
   under `--verbose`). Declining aborts, which is always safe: the rename-back
   happens after the sync. `--verbose` also traces each ssh command;
   `--dry-run` implies `--verbose` and shows up as a literal `--dry-run` in
-  the rsync command rather than skipping it. Colors come from the `colored`
+  the rsync command rather than skipping it. `-y`/`--yes` answers yes to
+  every confirmation (rsync and culled-move) but still prints the commands
+  and the culled-file listing. Colors come from the `colored`
   crate (auto-disabled when piped / `NO_COLOR`).
 - After changing Rust behavior that completion depends on, `cargo install
   --path .` — the completion shells out to the installed binary, not

@@ -43,6 +43,10 @@ struct Cli {
     #[arg(long, global = true, value_name = "SUFFIX")]
     suffix: Option<String>,
 
+    /// Answer yes to every confirmation prompt
+    #[arg(short = 'y', long, global = true)]
+    yes: bool,
+
     /// Print each rsync/ssh command before running it
     #[arg(short, long, global = true)]
     verbose: bool,
@@ -88,6 +92,7 @@ struct Config {
     remote_root: String,
     culled_root: String,
     checked_out_suffix: String,
+    yes: bool,
     verbose: bool,
     dry_run: bool,
 }
@@ -136,6 +141,7 @@ impl Config {
             remote_root: root,
             culled_root: culled,
             checked_out_suffix: suffix,
+            yes: cli.yes,
             verbose: cli.verbose || cli.dry_run,
             dry_run: cli.dry_run,
         })
@@ -669,10 +675,12 @@ fn cull_removed(cfg: &Config, folder: &Folder, dest: &str, local_dir: &Path) -> 
     if culled.len() > LISTED {
         eprintln!("{}", format!("  [{} more]", culled.len() - LISTED).dimmed());
     }
-    if !confirm(&format!(
-        "Move them to {culled_dir} on {}?",
-        cfg.remote_host
-    ))? {
+    let move_them = cfg.yes
+        || confirm(&format!(
+            "Move them to {culled_dir} on {}?",
+            cfg.remote_host
+        ))?;
+    if !move_them {
         eprintln!(
             "{}",
             "leaving them in place; they will reappear in Lightroom after push".dimmed()
@@ -821,11 +829,11 @@ fn confirm_rsyncs(cfg: &Config, action: &str, cmds: &[Command]) -> Result<()> {
     let question = format!("{action}?");
 
     // verbose already shows the full commands, so no need for the inline hint
-    let proceed = if cfg.verbose {
+    let proceed = if cfg.verbose || cfg.yes {
         for command in &commands {
             println!("{}", format!("+ {command}").dimmed());
         }
-        confirm(&question)?
+        cfg.yes || confirm(&question)?
     } else {
         confirm_with_hint(&question, &commands)?
     };

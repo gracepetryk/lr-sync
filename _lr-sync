@@ -9,6 +9,7 @@ _lr-sync() {
     '(-r --remote)'{-r,--remote}'[remote tree root, HOST\:DIR]:remote:' \
     '--culled[culled tree root on the remote]:directory:' \
     '--suffix[checked-out suffix on the remote]:suffix:' \
+    '(-y --yes)'{-y,--yes}'[answer yes to every confirmation prompt]' \
     '(-v --verbose)'{-v,--verbose}'[print each rsync/ssh command before running it]' \
     '(-n --dry-run)'{-n,--dry-run}'[show what would happen without changing anything]' \
     '(-h --help)'{-h,--help}'[show help]' \
