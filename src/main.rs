@@ -464,7 +464,7 @@ fn pull(cfg: &Config, folders: &[Folder]) -> Result<()> {
     )?;
 
     for ((folder, _, need_rename), cmd) in plan.iter().zip(&mut cmds) {
-        run_rsync(cmd)?;
+        run_rsync(cfg, cmd)?;
         if *need_rename {
             remote_mv(cfg, &cfg.remote_dir(folder), &cfg.remote_checked_out(folder))?;
         }
@@ -542,7 +542,7 @@ fn push(cfg: &Config, folders: &[Folder]) -> Result<()> {
     )?;
 
     for ((folder, dest, was_checked_out), cmd) in plan.iter().zip(&mut cmds) {
-        run_rsync(cmd)?;
+        run_rsync(cfg, cmd)?;
         let remote_dir = cfg.remote_dir(folder);
         if *was_checked_out {
             remote_mv(cfg, dest, &remote_dir)?;
@@ -823,17 +823,21 @@ fn command_line(cmd: &Command) -> String {
 }
 
 /// Announce `action`, show the exact rsync command(s) dimmed, and confirm the
-/// whole batch; declining aborts (safe: nothing has run yet).
+/// whole batch; declining aborts (safe: nothing has run yet). With --yes
+/// there is nothing to ask; each command is echoed as it runs instead.
 fn confirm_rsyncs(cfg: &Config, action: &str, cmds: &[Command]) -> Result<()> {
+    if cfg.yes {
+        return Ok(());
+    }
     let commands: Vec<String> = cmds.iter().map(command_line).collect();
     let question = format!("{action}?");
 
     // verbose already shows the full commands, so no need for the inline hint
-    let proceed = if cfg.verbose || cfg.yes {
+    let proceed = if cfg.verbose {
         for command in &commands {
             println!("{}", format!("+ {command}").dimmed());
         }
-        cfg.yes || confirm(&question)?
+        confirm(&question)?
     } else {
         confirm_with_hint(&question, &commands)?
     };
@@ -843,7 +847,12 @@ fn confirm_rsyncs(cfg: &Config, action: &str, cmds: &[Command]) -> Result<()> {
     Ok(())
 }
 
-fn run_rsync(cmd: &mut Command) -> Result<()> {
+fn run_rsync(cfg: &Config, cmd: &mut Command) -> Result<()> {
+    // under --yes the batch confirmation didn't show the commands upfront;
+    // echo each one right before its transfer so output stays in order
+    if cfg.yes {
+        println!("{}", format!("+ {}", command_line(cmd)).dimmed());
+    }
     let status = cmd.status().context("failed to run rsync")?;
     ensure!(status.success(), "{} failed: {status}", command_line(cmd));
     Ok(())
