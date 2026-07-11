@@ -57,13 +57,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Copy a folder from the remote to the local tree; the remote copy is
+    /// Copy folders from the remote to the local tree; the remote copies are
     /// renamed with the checked-out suffix (never deleted)
-    Pull { folder: String },
+    Pull {
+        #[arg(required = true)]
+        folders: Vec<String>,
+    },
 
-    /// Copy a folder back to the remote, restore its original name, and
-    /// remove the local copy as files transfer
-    Push { folder: String },
+    /// Copy folders back to the remote, restore their original names, and
+    /// remove the local copies as files transfer
+    Push {
+        #[arg(required = true)]
+        folders: Vec<String>,
+    },
 
     /// Create the config file by prompting for each value
     Configure,
@@ -193,11 +199,17 @@ fn main() -> Result<()> {
     }
     let cfg = Config::from_cli(&cli)?;
     match &cli.command {
-        Cmd::Pull { folder } => pull(&cfg, &Folder::parse(folder, &cfg.checked_out_suffix)?),
-        Cmd::Push { folder } => push(&cfg, &Folder::parse(folder, &cfg.checked_out_suffix)?),
+        Cmd::Pull { folders } => pull(&cfg, &parse_folders(folders, &cfg.checked_out_suffix)?),
+        Cmd::Push { folders } => push(&cfg, &parse_folders(folders, &cfg.checked_out_suffix)?),
         Cmd::ListFolders { cmd } => list_folders(&cfg, cmd),
         Cmd::Configure => unreachable!(),
     }
+}
+
+fn parse_folders(raw: &[String], checked_out_suffix: &str) -> Result<Vec<Folder>> {
+    raw.iter()
+        .map(|r| Folder::parse(r, checked_out_suffix))
+        .collect()
 }
 
 fn split_remote(remote: &str) -> Result<(String, String)> {
@@ -271,23 +283,26 @@ fn confirm(question: &str) -> Result<bool> {
     }
 }
 
-/// Like [`confirm`], but shows `hint` dimmed and indented on the line below
-/// the prompt, with the cursor left at the answer position:
+/// Like [`confirm`], but shows `hints` dimmed and indented (one per line)
+/// below the prompt, with the cursor left at the answer position:
 ///
-///   Pull 2026-07-01 from mediabox? [Y/n]: _
+///   Pull 123 photos from mediabox? [Y/n]: _
+///       (rsync ...)
 ///       (rsync ...)
 ///
-/// The hint is cleared once answered. Without a usable tty width the same
+/// The hints are cleared once answered. Without a usable tty width the same
 /// layout is printed without cursor movement (answered on the line below).
-fn confirm_with_hint(question: &str, hint: &str) -> Result<bool> {
-    let hint_line = format!("    ({hint})");
+fn confirm_with_hint(question: &str, hints: &[String]) -> Result<bool> {
+    let hint_lines: Vec<String> = hints.iter().map(|h| format!("    ({h})")).collect();
     let cols = terminal_size::terminal_size()
         .map(|(w, _)| w.0 as usize)
         .filter(|w| *w > 0);
 
     let Some(cols) = cols else {
         println!("{} {}", question.bold(), "[Y/n]:".dimmed());
-        println!("{}", hint_line.dimmed());
+        for line in &hint_lines {
+            println!("{}", line.dimmed());
+        }
         io::stdout().flush()?;
         let mut line = String::new();
         io::stdin().read_line(&mut line)?;
@@ -301,15 +316,22 @@ fn confirm_with_hint(question: &str, hint: &str) -> Result<bool> {
         };
     };
 
-    // print prompt + hint, then park the cursor back at the answer position
+    // print prompt + hints, then park the cursor back at the answer position
     // (one row per wrapped hint line up, then just past the prompt)
     let prompt_cols = question.chars().count() + " [Y/n]: ".len();
-    let hint_rows = hint_line.chars().count().div_ceil(cols).max(1);
+    let hint_rows: usize = hint_lines
+        .iter()
+        .map(|l| l.chars().count().div_ceil(cols).max(1))
+        .sum();
+    let hint_block = hint_lines
+        .iter()
+        .map(|l| l.dimmed().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     print!(
-        "{} {}\n{}\x1b[{hint_rows}A\x1b[{col}G",
+        "{} {}\n{hint_block}\x1b[{hint_rows}A\x1b[{col}G",
         question.bold(),
         "[Y/n]:".dimmed(),
-        hint_line.dimmed(),
         col = prompt_cols + 1
     );
     io::stdout().flush()?;
@@ -389,125 +411,184 @@ fn configure() -> Result<()> {
     Ok(())
 }
 
-fn pull(cfg: &Config, folder: &Folder) -> Result<()> {
-    let remote_dir = cfg.remote_dir(folder);
-    let remote_co = cfg.remote_checked_out(folder);
-    let local_dir = cfg.local_dir(folder);
-
-    let (dir_exists, co_exists) = remote_state(cfg, folder)?;
-    let (src, need_rename) = if co_exists {
-        eprintln!(
-            "{}",
-            format!(
-                "note: {} is already checked out on {}; resuming pull",
-                folder.name, cfg.remote_host
-            )
-            .dimmed()
-        );
-        (remote_co.clone(), false)
-    } else if dir_exists {
-        (remote_dir.clone(), true)
-    } else {
-        bail!("{remote_dir} not found on {}", cfg.remote_host);
-    };
-
-    fs::create_dir_all(cfg.local_root.join(&folder.year))?;
-    // remote -> local only, no delete flags: the NAS copy is never touched
-    rsync(
-        cfg,
-        &format!("Pull {} from {}", folder.name, cfg.remote_host),
-        &[],
-        &format!("{}:{}/", cfg.remote_host, src),
-        &format!("{}/", local_dir.display()),
-    )?;
-
-    if need_rename {
-        remote_mv(cfg, &remote_dir, &remote_co)?;
-    }
-
-    println!(
-        "{}",
-        format!(
-            "pulled {} -> {} (remote copy kept as {}{})",
-            folder.name,
-            local_dir.display(),
-            folder.name,
-            cfg.checked_out_suffix
-        )
-        .green()
-    );
-    Ok(())
-}
-
-fn push(cfg: &Config, folder: &Folder) -> Result<()> {
-    let remote_dir = cfg.remote_dir(folder);
-    let remote_co = cfg.remote_checked_out(folder);
-    let local_dir = cfg.local_dir(folder);
-
-    ensure!(local_dir.is_dir(), "{} not found", local_dir.display());
-    let (dir_exists, co_exists) = remote_state(cfg, folder)?;
-
-    let dest_exists = dir_exists || co_exists;
-    let dest = if co_exists {
-        remote_co.clone()
-    } else if dir_exists {
-        remote_dir.clone()
-    } else {
-        eprintln!(
-            "{}",
-            format!(
-                "note: {} does not exist on {}; creating it",
-                folder.name, cfg.remote_host
-            )
-            .dimmed()
-        );
-        let year_dir = format!("{}/{}", cfg.remote_root, folder.year);
-        remote_run(cfg, &format!("mkdir -p {}", sh_quote(&year_dir)))?;
-        remote_dir.clone()
-    };
-
-    // files deleted locally while checked out move to the culled tree before
-    // the sync, so they neither reappear in Lightroom nor get lost
-    if dest_exists {
-        cull_removed(cfg, folder, &dest, &local_dir)?;
-    }
-
-    rsync(
-        cfg,
-        &format!("Push {} to {}", folder.name, cfg.remote_host),
-        &["--remove-source-files"],
-        &format!("{}/", local_dir.display()),
-        &format!("{}:{}/", cfg.remote_host, dest),
-    )?;
-
-    if dest == remote_co {
-        remote_mv(cfg, &remote_co, &remote_dir)?;
-    }
-
-    if !cfg.dry_run {
-        // rsync --remove-source-files leaves empty directories behind
-        remove_empty_dirs(&local_dir)?;
-        if local_dir.is_dir() {
+fn pull(cfg: &Config, folders: &[Folder]) -> Result<()> {
+    // resolve every folder before transferring anything, so a missing folder
+    // or a checked-out conflict aborts the whole batch up front
+    let mut photos = 0;
+    let mut plan = Vec::new();
+    for folder in folders {
+        let (dir_exists, co_exists) = remote_state(cfg, folder)?;
+        let (src, need_rename) = if co_exists {
             eprintln!(
                 "{}",
                 format!(
-                    "warning: {} is not empty after push; left in place",
-                    local_dir.display()
+                    "note: {} is already checked out on {}; resuming pull",
+                    folder.name, cfg.remote_host
                 )
-                .yellow()
+                .dimmed()
             );
-        }
+            (cfg.remote_checked_out(folder), false)
+        } else if dir_exists {
+            (cfg.remote_dir(folder), true)
+        } else {
+            bail!("{} not found on {}", cfg.remote_dir(folder), cfg.remote_host);
+        };
+        photos += remote_file_list(cfg, &src)?
+            .iter()
+            .filter(|p| is_photo(p))
+            .count();
+        plan.push((folder, src, need_rename));
     }
 
-    println!(
-        "{}",
-        format!(
-            "pushed {} -> {}:{}",
-            folder.name, cfg.remote_host, remote_dir
-        )
-        .green()
-    );
+    let mut cmds = Vec::new();
+    for (folder, src, _) in &plan {
+        fs::create_dir_all(cfg.local_root.join(&folder.year))?;
+        // remote -> local only, no delete flags: the NAS copy is never touched
+        cmds.push(rsync_command(
+            cfg,
+            &[],
+            &format!("{}:{src}/", cfg.remote_host),
+            &format!("{}/", cfg.local_dir(folder).display()),
+        ));
+    }
+    confirm_rsyncs(
+        cfg,
+        &format!("Pull {} from {}", photos_label(photos), cfg.remote_host),
+        &cmds,
+    )?;
+
+    for ((folder, _, need_rename), cmd) in plan.iter().zip(&mut cmds) {
+        run_rsync(cmd)?;
+        if *need_rename {
+            remote_mv(cfg, &cfg.remote_dir(folder), &cfg.remote_checked_out(folder))?;
+        }
+        println!(
+            "{}",
+            format!(
+                "pulled {} -> {} (remote copy kept as {}{})",
+                folder.name,
+                cfg.local_dir(folder).display(),
+                folder.name,
+                cfg.checked_out_suffix
+            )
+            .green()
+        );
+    }
     Ok(())
+}
+
+fn push(cfg: &Config, folders: &[Folder]) -> Result<()> {
+    // resolve every folder (and settle its culled files) before transferring
+    // anything, so a missing folder or a conflict aborts the batch up front
+    let mut photos = 0;
+    let mut plan = Vec::new();
+    for folder in folders {
+        let local_dir = cfg.local_dir(folder);
+        ensure!(local_dir.is_dir(), "{} not found", local_dir.display());
+        let (dir_exists, co_exists) = remote_state(cfg, folder)?;
+
+        let dest = if co_exists {
+            cfg.remote_checked_out(folder)
+        } else if dir_exists {
+            cfg.remote_dir(folder)
+        } else {
+            eprintln!(
+                "{}",
+                format!(
+                    "note: {} does not exist on {}; creating it",
+                    folder.name, cfg.remote_host
+                )
+                .dimmed()
+            );
+            let year_dir = format!("{}/{}", cfg.remote_root, folder.year);
+            remote_run(cfg, &format!("mkdir -p {}", sh_quote(&year_dir)))?;
+            cfg.remote_dir(folder)
+        };
+
+        // files deleted locally while checked out move to the culled tree
+        // before the sync, so they neither reappear in Lightroom nor get lost
+        if dir_exists || co_exists {
+            cull_removed(cfg, folder, &dest, &local_dir)?;
+        }
+
+        photos += local_file_set(&local_dir)?
+            .iter()
+            .filter(|p| is_photo(p))
+            .count();
+        plan.push((folder, dest, co_exists));
+    }
+
+    let mut cmds: Vec<Command> = plan
+        .iter()
+        .map(|(folder, dest, _)| {
+            rsync_command(
+                cfg,
+                &["--remove-source-files"],
+                &format!("{}/", cfg.local_dir(folder).display()),
+                &format!("{}:{dest}/", cfg.remote_host),
+            )
+        })
+        .collect();
+    confirm_rsyncs(
+        cfg,
+        &format!("Push {} to {}", photos_label(photos), cfg.remote_host),
+        &cmds,
+    )?;
+
+    for ((folder, dest, was_checked_out), cmd) in plan.iter().zip(&mut cmds) {
+        run_rsync(cmd)?;
+        let remote_dir = cfg.remote_dir(folder);
+        if *was_checked_out {
+            remote_mv(cfg, dest, &remote_dir)?;
+        }
+
+        if !cfg.dry_run {
+            // rsync --remove-source-files leaves empty directories behind
+            let local_dir = cfg.local_dir(folder);
+            remove_empty_dirs(&local_dir)?;
+            if local_dir.is_dir() {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "warning: {} is not empty after push; left in place",
+                        local_dir.display()
+                    )
+                    .yellow()
+                );
+            }
+        }
+
+        println!(
+            "{}",
+            format!(
+                "pushed {} -> {}:{}",
+                folder.name, cfg.remote_host, remote_dir
+            )
+            .green()
+        );
+    }
+    Ok(())
+}
+
+/// Count label for the confirmation prompt.
+fn photos_label(n: usize) -> String {
+    match n {
+        1 => "1 photo".to_string(),
+        _ => format!("{n} photos"),
+    }
+}
+
+/// Whether a file counts as a photo in the confirmation prompt: leaves out
+/// sidecars and other metadata (xmp/lua, dotfiles like .DS_Store, Thumbs.db).
+fn is_photo(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if name.starts_with('.') || name.eq_ignore_ascii_case("thumbs.db") {
+        return false;
+    }
+    match name.rsplit_once('.') {
+        Some((_, ext)) => !matches!(ext.to_ascii_lowercase().as_str(), "xmp" | "lua"),
+        None => true,
+    }
 }
 
 fn list_folders(cfg: &Config, cmd: &str) -> Result<()> {
@@ -712,8 +793,7 @@ fn remote_state(cfg: &Config, folder: &Folder) -> Result<(bool, bool)> {
     Ok((dir_exists, co_exists))
 }
 
-/// Announce `action`, show the exact rsync command dimmed, confirm, run.
-fn rsync(cfg: &Config, action: &str, extra_args: &[&str], src: &str, dest: &str) -> Result<()> {
+fn rsync_command(cfg: &Config, extra_args: &[&str], src: &str, dest: &str) -> Command {
     let mut cmd = Command::new("rsync");
 
     cmd.args(["-a", "-h", "--info=progress2"]);
@@ -723,26 +803,41 @@ fn rsync(cfg: &Config, action: &str, extra_args: &[&str], src: &str, dest: &str)
     }
 
     cmd.args(extra_args).arg(src).arg(dest);
+    cmd
+}
 
-    let shown: Vec<_> = std::iter::once(cmd.get_program())
+fn command_line(cmd: &Command) -> String {
+    std::iter::once(cmd.get_program())
         .chain(cmd.get_args())
         .map(|w| w.to_string_lossy())
-        .collect();
-    let command = shown.join(" ");
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Announce `action`, show the exact rsync command(s) dimmed, and confirm the
+/// whole batch; declining aborts (safe: nothing has run yet).
+fn confirm_rsyncs(cfg: &Config, action: &str, cmds: &[Command]) -> Result<()> {
+    let commands: Vec<String> = cmds.iter().map(command_line).collect();
     let question = format!("{action}?");
 
-    // verbose already shows the full command, so no need for the inline hint
+    // verbose already shows the full commands, so no need for the inline hint
     let proceed = if cfg.verbose {
-        println!("{}", format!("+ {command}").dimmed());
+        for command in &commands {
+            println!("{}", format!("+ {command}").dimmed());
+        }
         confirm(&question)?
     } else {
-        confirm_with_hint(&question, &command)?
+        confirm_with_hint(&question, &commands)?
     };
     if !proceed {
         bail!("aborted");
     }
+    Ok(())
+}
+
+fn run_rsync(cmd: &mut Command) -> Result<()> {
     let status = cmd.status().context("failed to run rsync")?;
-    ensure!(status.success(), "rsync {src} -> {dest} failed: {status}");
+    ensure!(status.success(), "{} failed: {status}", command_line(cmd));
     Ok(())
 }
 
@@ -862,6 +957,23 @@ mod tests {
         assert_eq!(sibling_culled("/photos/archive"), "/photos/culled");
         assert_eq!(sibling_culled("/archive"), "/culled");
         assert_eq!(sibling_culled("archive"), "/culled");
+    }
+
+    #[test]
+    fn is_photo_skips_sidecars_and_metadata() {
+        for p in ["IMG_0001.NEF", "IMG_0001.jpg", "sub/IMG_0002.dng", "raw"] {
+            assert!(is_photo(p), "should count {p:?}");
+        }
+        for p in [
+            "IMG_0001.xmp",
+            "IMG_0001.XMP",
+            "meta.lua",
+            ".DS_Store",
+            "sub/.hidden",
+            "Thumbs.db",
+        ] {
+            assert!(!is_photo(p), "should not count {p:?}");
+        }
     }
 
     #[test]

@@ -41,6 +41,10 @@ Folders are named `YYYY-MM-DD…` and live under a year directory on both sides
   interactively first (default yes; declining leaves them in place).
   Collisions in the culled tree get `.collision`, `.collision-2`, ...
   suffixes (never overwrite).
+- `pull` and `push` accept multiple folders. Every folder is resolved (and
+  culled files settled) before anything transfers, then the batch is confirmed
+  once and rsynced folder by folder (each folder's rename/cleanup right after
+  its transfer).
 - If both `<folder>` and `<folder>.checked-out` exist on the NAS, refuse to do
   anything and tell the user to resolve it manually.
 - Pulling an already-checked-out folder resumes from the `.checked-out` copy.
@@ -60,8 +64,10 @@ Folders are named `YYYY-MM-DD…` and live under a year directory on both sides
 - Anything that changes state on the NAS goes through `remote_run` (or
   `remote_script` for batches, which pipes via stdin to avoid arg limits) so
   `--dry-run` stays honest.
-- `rsync` confirms with "Push <folder> to <host>? [Y/n]:" and the exact
-  command dimmed and indented on the line below (cleared after answering;
+- `rsync` confirms with "Push <n> photos to <host>? [Y/n]:" — the count skips
+  sidecars/metadata (`is_photo`: no xmp/lua, dotfiles, Thumbs.db) — with the
+  exact command(s) dimmed and indented on the lines below (cleared after
+  answering;
   plain layout without cursor movement when there's no usable tty width or
   under `--verbose`). Declining aborts, which is always safe: the rename-back
   happens after the sync. `--verbose` also traces each ssh command;

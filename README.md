@@ -6,8 +6,8 @@ to manage limited laptop disk space. Folders live under a year directory on
 both sides, e.g. `<root>/2026/2026-07-01`.
 
 ```
-lr-sync pull 2026-07-01   # NAS -> laptop
-lr-sync push 2026-07-01   # laptop -> NAS
+lr-sync pull 2026-07-01              # NAS -> laptop
+lr-sync push 2026-07-01 2026-07-02   # laptop -> NAS (one or more folders)
 ```
 
 - `pull` copies a folder to the laptop and marks it checked out on the NAS.

@@ -13,7 +13,7 @@ _lr-sync() {
     '(-n --dry-run)'{-n,--dry-run}'[show what would happen without changing anything]' \
     '(-h --help)'{-h,--help}'[show help]' \
     '1:command:->command' \
-    '2:folder:->folder' && ret=0
+    '*:folder:->folder' && ret=0
 
   case $state in
     command)
@@ -37,6 +37,8 @@ _lr-sync() {
 
       local -a folders
       folders=(${(f)"$(lr-sync $flags list-folders $line[1] 2>/dev/null)"})
+      # don't re-offer folders already on the command line
+      folders=(${folders:|words})
       # -V keeps lr-sync's order (newest first) instead of zsh re-sorting
       _wanted -V folders expl 'folder' compadd -a folders && ret=0
       ;;
