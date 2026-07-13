@@ -5,7 +5,7 @@ use colored::Colorize;
 use std::process::Command;
 
 use crate::config::Config;
-use crate::ui::{confirm, confirm_with_hint};
+use crate::ui::{Default, confirm, confirm_with_hint};
 
 pub fn rsync_command(cfg: &Config, extra_args: &[&str], src: &str, dest: &str) -> Command {
     let mut cmd = Command::new("rsync");
@@ -43,7 +43,7 @@ pub fn confirm_rsyncs(cfg: &Config, action: &str, cmds: &[Command]) -> Result<()
         for command in &commands {
             println!("{}", format!("+ {command}").dimmed());
         }
-        confirm(&question)?
+        confirm(&question, Default::Yes)?
     } else {
         confirm_with_hint(&question, &commands)?
     };

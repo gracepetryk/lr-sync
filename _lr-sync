@@ -4,6 +4,11 @@
 # (rather than needing one tab to list and a second to enter the menu); the
 # candidates usually share a long prefix, so seeing them selectable at once is
 # what you want.
+# Silence the terminal bell for this completion (no beep on an ambiguous list
+# or when a tab yields no matches, e.g. tabbing past a leaf folder); scoped to
+# this completion via localoptions so other completions are unaffected.
+setopt localoptions no_beep no_list_beep no_hist_beep
+
 zstyle ':completion:*:lr-sync:*' menu select
 
 # Complete folder arguments for pull/push. Candidates come from the installed

@@ -4,15 +4,36 @@ use anyhow::{Result, ensure};
 use colored::Colorize;
 use std::io::{self, Write};
 
-/// Ask a yes/no question; enter (or EOF) takes the default "yes".
-pub fn confirm(question: &str) -> Result<bool> {
+/// Which answer enter (or EOF) selects for [`confirm`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Default {
+    Yes,
+    No,
+}
+
+impl From<Default> for bool {
+    fn from(val: Default) -> Self {
+        match val {
+            Default::Yes => true,
+            Default::No => false,
+        }
+    }
+}
+
+/// Ask a yes/no question; enter (or EOF) takes `default`.
+pub fn confirm(question: &str, default: Default) -> Result<bool> {
+    let prompt = match default {
+        Default::Yes => "[Y/n]:",
+        Default::No => "[y/N]:",
+    };
     loop {
-        print!("{} {} ", question.bold(), "[Y/n]:".dimmed());
+        print!("{} {} ", question.bold(), prompt.dimmed());
         io::stdout().flush()?;
         let mut line = String::new();
         io::stdin().read_line(&mut line)?;
         match line.trim().to_lowercase().as_str() {
-            "" | "y" | "yes" => return Ok(true),
+            "" => return Ok(default.into()),
+            "y" | "yes" => return Ok(true),
             "n" | "no" => return Ok(false),
             _ => eprintln!("please answer y or n"),
         }
@@ -47,7 +68,7 @@ pub fn confirm_with_hint(question: &str, hints: &[String]) -> Result<bool> {
             "n" | "no" => Ok(false),
             _ => {
                 eprintln!("please answer y or n");
-                confirm(question)
+                confirm(question, Default::Yes)
             }
         };
     };
@@ -81,7 +102,7 @@ pub fn confirm_with_hint(question: &str, hints: &[String]) -> Result<bool> {
         "n" | "no" => Ok(false),
         _ => {
             eprintln!("please answer y or n");
-            confirm(question)
+            confirm(question, Default::Yes)
         }
     }
 }

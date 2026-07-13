@@ -53,7 +53,7 @@ returns as a whole.
   locally) are moved before the sync to `<culled root>/<year>/<folder>/`
   (flag `--culled`), preserving relative paths, so they don't reappear in
   Lightroom but are never lost. The files are listed and confirmed
-  interactively first (default yes; declining leaves them in place).
+  interactively first (default no; declining leaves them in place).
   Collisions in the culled tree get `.collision`, `.collision-2`, ...
   suffixes (never overwrite).
 - `pull` and `push` accept multiple folders. Every folder is resolved (and

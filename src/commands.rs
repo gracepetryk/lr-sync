@@ -14,7 +14,7 @@ use crate::remote::{
     remote_script, remote_state, sh_quote,
 };
 use crate::rsync::{Echo, confirm_rsyncs, rsync_command, run_rsync};
-use crate::ui::confirm;
+use crate::ui::{Default, confirm};
 
 pub fn pull(cfg: &Config, folders: &[Folder]) -> Result<()> {
     // resolve every folder before transferring anything, so a missing folder
@@ -358,10 +358,10 @@ fn cull_removed(cfg: &Config, folder: &Folder, dest: &str, local_dir: &Path) -> 
         eprintln!("{}", format!("  [{} more]", culled.len() - LISTED).dimmed());
     }
     let move_them = cfg.yes
-        || confirm(&format!(
-            "Move them to {culled_dir} on {}?",
-            cfg.remote_host
-        ))?;
+        || confirm(
+            &format!("Move them to {culled_dir} on {}?", cfg.remote_host),
+            Default::No,
+        )?;
     if !move_them {
         eprintln!(
             "{}",
