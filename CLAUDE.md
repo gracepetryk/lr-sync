@@ -50,7 +50,9 @@ returns as a whole.
   checked out and keeps untransferred files locally), then prunes the emptied
   local directory tree.
 - `push` never uses `--delete`. Files culled locally (on the NAS but missing
-  locally) are moved before the sync to `<culled root>/<year>/<folder>/`
+  locally, and only in leaf folders the local copy also has files in — when
+  pushing a parent layer, shoots that were never pulled are not treated as
+  culled) are moved before the sync to `<culled root>/<year>/<folder>/`
   (flag `--culled`), preserving relative paths, so they don't reappear in
   Lightroom but are never lost. The files are listed and confirmed
   interactively first (default no; declining leaves them in place).

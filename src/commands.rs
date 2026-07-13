@@ -323,11 +323,7 @@ fn uncheckout_subdirs(cfg: &Config, dest: &str) -> Result<()> {
 /// paths, so they don't reappear after push but are never lost.
 fn cull_removed(cfg: &Config, folder: &Folder, dest: &str, local_dir: &Path) -> Result<()> {
     let local = local_file_set(local_dir)?;
-    let mut culled: Vec<String> = remote_file_list(cfg, dest)?
-        .into_iter()
-        .filter(|p| !local.contains(p))
-        .collect();
-    culled.sort();
+    let culled = cull_candidates(remote_file_list(cfg, dest)?, &local);
     if culled.is_empty() {
         return Ok(());
     }
@@ -401,6 +397,23 @@ fn cull_removed(cfg: &Config, folder: &Folder, dest: &str, local_dir: &Path) -> 
     remote_script(cfg, &script, "culled-file move")
 }
 
+/// Remote files considered culled: missing locally, and inside a leaf folder
+/// the local copy also has files in. When pushing a parent layer (a month, a
+/// year), shoots that were never pulled exist only on the NAS — their files
+/// are not culled, just absent locally, so they stay out of the comparison.
+fn cull_candidates(remote: Vec<String>, local: &BTreeSet<String>) -> Vec<String> {
+    fn parent(p: &str) -> &str {
+        p.rsplit_once('/').map_or("", |(dir, _)| dir)
+    }
+    let local_dirs: BTreeSet<&str> = local.iter().map(|p| parent(p)).collect();
+    let mut culled: Vec<String> = remote
+        .into_iter()
+        .filter(|p| !local.contains(p) && local_dirs.contains(parent(p)))
+        .collect();
+    culled.sort();
+    culled
+}
+
 /// Relative paths of all regular files under `dir`.
 fn local_file_set(dir: &Path) -> Result<BTreeSet<String>> {
     fn walk(root: &Path, dir: &Path, out: &mut BTreeSet<String>) -> Result<()> {
@@ -451,6 +464,29 @@ fn remove_empty_dirs(dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cull_candidates_only_in_leaf_dirs_present_locally() {
+        let local: BTreeSet<String> = [
+            "2026-07-10/a.NEF",
+            "2026-07-10/sub/b.NEF",
+            "root.NEF",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let remote = vec![
+            "2026-07-10/a.NEF".to_string(),    // present locally: kept
+            "2026-07-10/c.NEF".to_string(),    // culled: leaf exists locally
+            "2026-07-05/d.NEF".to_string(),    // never pulled: not culled
+            "2026-07-10/other/e.NEF".to_string(), // sibling leaf never pulled
+            "gone.NEF".to_string(),            // root has local files: culled
+        ];
+        assert_eq!(
+            cull_candidates(remote, &local),
+            vec!["2026-07-10/c.NEF".to_string(), "gone.NEF".to_string()]
+        );
+    }
 
     #[test]
     fn is_photo_skips_sidecars_and_metadata() {
